@@ -1,7 +1,7 @@
 # 深度登记 ledgerbank
 
 - 规模：中型（7 个功能模块 / 7 个页面 / 75 条测试）
-- 核心规则：方向相同、金额差 ≤ 0.02 元、日期差 ≤ 3 天的候选；一对一、一对多、多对一按层级与金额差确定性择一；多对一用最多 4 条的受限子集和；手续费单独计入银行侧并按最大余额法分摊。
+- 核心规则：方向相同、金额差 ≤ 0.02 元、日期差 ≤ 3 天的候选；一对一、一对多、多对一全局择一（对平笔数 → 对平金额 → 总差额 → 总日期差 → 结构 → 业务号字典序）；多对一用最多 4 条的受限子集和；确认的组重跑保留；手续费单独计入银行侧并按最大余额法分摊。
 - 使用者与工作流：连锁零售财务共享组会计每月把 12 个账户的银行流水与账簿凭证放在一起核对；一笔付款拆多张凭证、多笔流水合并付一张发票，原先逐条手工比对，现在一次运行得到匹配组、未匹配清单、隔离证据与两侧守恒。
 
 ## 功能模块
@@ -12,7 +12,7 @@
 | M2 金额日期规则 | 查看列定义、借贷符号、容差与日期窗口 | GET /api/contract | `app/modules/m2_contract/contract.py` `app/modules/m2_contract/coerce.py` | `tests/test_m2_contract.py` |
 | M3 质量隔离 | 按原因码看隔离行并导出 CSV | GET /api/quarantine、页面 /quarantine | `app/modules/m3_quality/rules.py` `app/modules/m3_quality/quarantine.py` | `tests/test_m3_quality.py` |
 | M4 候选匹配 | 生成一对一、一对多、多对一候选 | POST /api/candidates、页面 /candidates | `app/modules/m4_candidates/candidate.py` `app/modules/m4_candidates/window.py` | `tests/test_m4_candidates.py` |
-| M5 多对多求解 | 求解不重叠匹配组，看手续费分摊 | POST /api/matches、页面 /matches | `app/modules/m5_matching/subset.py` `app/modules/m5_matching/fees.py` `app/modules/m5_matching/solve.py` | `tests/test_m5_matching.py` |
+| M5 多对多求解 | 全局求解不重叠匹配组，确认锁定分组，看手续费分摊与被放弃的候选 | POST /api/matches、POST /api/matches/{id}/confirm、页面 /matches | `app/modules/m5_matching/optimize.py` `app/modules/m5_matching/solve.py` `app/modules/m5_matching/fees.py` | `tests/test_m5_matching.py` `tests/test_m5_optimize.py` `tests/test_m5_confirmation.py` |
 | M6 差异与批次 | 看两侧守恒、差异归因与历史批次 | GET /api/differences、GET /api/batches、页面 /batches | `app/modules/m6_diff/differences.py` `app/modules/m6_diff/history.py` | `tests/test_m6_differences.py` |
 | M7 报告导出 | 导出报告 CSV 与运行清单 JSON | GET /api/export/report.csv、页面 /export | `app/modules/m7_export/csv_out.py` `app/modules/m7_export/manifest_out.py` | `tests/test_m7_export.py` |
 
@@ -30,9 +30,11 @@
 | TRAP-14 | 同一流水号两条不同金额（1250.50 / 999.00） | 后写覆盖，匹配金额随文件顺序变化 | 保留发生时间最早一条，时间相同取行号小者，其余进冲突隔离 | `app/modules/m3_quality/rules.py` | `tests/test_m3_quality.py::test_duplicate_txn_keeps_earliest` |
 | TRAP-16 | 文件末行没有换行且列数不足 | 半行被当成有效流水 | 末行缺列且无换行时判 `TRUNCATED_TAIL` 进隔离 | `app/modules/m1_ingest/segments.py` | `tests/test_m1_ingest.py::test_truncated_tail_rejected` |
 | TRAP-18 | 0 字节 / 仅表头 / 全空行 | 都返回「成功 0 行」，用户不知道文件有没有内容 | 三种空态分别返回 `EMPTY_FILE`、`HEADER_ONLY`、`ALL_BLANK` | `app/modules/m1_ingest/reader.py` | `tests/test_m1_ingest.py::test_empty_states_are_three_outcomes` |
-| TRAP-19 | 同一对流水同时命中一对一与子集候选 | 结果取决于候选生成顺序 | 层级优先 + 金额差 + 日期差 + 业务号排序，输入顺序变化不影响结果 | `app/modules/m5_matching/subset.py` | `tests/test_m5_matching.py::test_result_independent_of_candidate_order` |
+| TRAP-19 | 同一对流水同时命中一对一与子集候选 | 结果取决于候选生成顺序 | 全局分支定界按统一目标函数择优，输入顺序变化不影响结果 | `app/modules/m5_matching/optimize.py` | `tests/test_m5_matching.py::test_result_independent_of_candidate_order` |
 | TRAP-23 | 日期差正好 3 天与 4 天；23:59:59 与次日 00:00 | 端点重复计入或跨日归错桶 | 本地日桶左闭右开 `[日初, 次日初)`；窗口按自然日差 ≤3 | `app/modules/m4_candidates/window.py` | `tests/test_m4_candidates.py::test_window_boundary_three_days_included` |
 | TRAP-24 | 手续费按比例分摊后合计差一分 | 各自四舍五入，分摊合计不等于实际合计 | 最大余额法分到 0.01 元，按组号确定性分配尾差 | `app/modules/m5_matching/fees.py` | `tests/test_m5_matching.py::test_fee_allocation_sums_to_actual` |
+| TRAP-25 | 一对一与一对多争同一笔流水 | 层级贪心先占一对一，完整拆分被拆散，月末多出未匹配项 | 全局目标先比对平笔数与金额，完整组合优先；被放弃候选记录占用它的组 | `app/modules/m5_matching/optimize.py` | `tests/test_m5_optimize.py::test_one_to_many_beats_competing_one_to_one` |
+| TRAP-26 | 重跑匹配或同输入重新导入 | 先删后插覆盖复核人已确认的分组 | 确认表独立于匹配结果，重跑时确认组原样保留、其行退出候选池 | `app/store.py`、`app/modules/m5_matching/service.py` | `tests/test_m5_confirmation.py::test_confirm_persists_across_match_rerun` |
 
 ## 对账规则
 
@@ -41,11 +43,14 @@
 - 银行笔数 = 匹配涉及银行行数 + 未匹配银行行数；账簿同理。
 - 手续费分摊合计 = 匹配组实际手续费合计。
 - 匹配差额 = 银行匹配金额 − 账簿匹配金额，容差 0.02 元内允许非 0，并在差异清单与页面显式列出。
+- 取舍目标（字典序）：对平笔数最多 → 对平金额最大 → 总差额最小 → 总日期差最小 → 结构最简单 → 业务号升序；同额同日多条候选统一取业务号小者。
+- 每条候选的取舍（选中 / 已确认 / 被放弃及占用它的组）落库，页面、差异清单与导出引用同一份。
+- 确认的组跨重跑保留；确认只锁定分组归属，手续费分摊随整体资金池重算。
 - 以上五账在 `/api/differences`、页面 `/batches` 与报告 CSV 中同时展示。
 
 ## 反例与不变量
 
-- 反例（朴素实现会挂）：`tests/test_m5_matching.py::test_bank_signed_total_matches_decimal_sum`（float 累加对不上分）、`tests/test_m1_ingest.py::test_truncated_tail_rejected`（`readlines()` 会把半行当数据）、`tests/test_m3_quality.py::test_duplicate_txn_keeps_earliest`（后写覆盖会得到 999.00）、`tests/test_m5_matching.py::test_many_to_one_subset_bounded_to_four`（5 笔合并会被错误凑成一笔）、`tests/test_m4_candidates.py::test_window_four_days_excluded`（宽窗口会多配一对）。
+- 反例（朴素实现会挂）：`tests/test_m5_matching.py::test_bank_signed_total_matches_decimal_sum`（float 累加对不上分）、`tests/test_m1_ingest.py::test_truncated_tail_rejected`（`readlines()` 会把半行当数据）、`tests/test_m3_quality.py::test_duplicate_txn_keeps_earliest`（后写覆盖会得到 999.00）、`tests/test_m5_matching.py::test_many_to_one_subset_bounded_to_four`（5 笔合并会被错误凑成一笔）、`tests/test_m4_candidates.py::test_window_four_days_excluded`（宽窗口会多配一对）、`tests/test_m5_optimize.py::test_one_to_many_beats_competing_one_to_one`（层级贪心会拆散完整组合）、`tests/test_m5_optimize.py::test_confirmed_group_survives_resolve`（重跑会覆盖确认组）。
 - 不变量：`tests/test_invariants.py::test_bank_conservation`（守恒）、`tests/test_invariants.py::test_disjoint_assignment`（一组不占两行）、`tests/test_invariants.py::test_fee_conservation`（分摊守恒）、`tests/test_invariants.py::test_rerun_row_counts_stable`（幂等）、`tests/test_invariants.py::test_quarantine_excluded_from_totals`（隔离不计入合计）。
 - 端到端：`tests/test_e2e.py::test_full_pipeline_from_samples`。
 

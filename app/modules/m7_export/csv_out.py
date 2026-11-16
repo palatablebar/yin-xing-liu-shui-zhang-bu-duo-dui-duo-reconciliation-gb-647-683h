@@ -1,6 +1,7 @@
-"""报告 CSV：合计、匹配组、未匹配、隔离四块，金额按十进制字符串原样输出。
+"""报告 CSV：合计、匹配组、取舍、未匹配、隔离五块，金额按十进制字符串原样输出。
 
-大整数业务号不做数值转换，避免科学计数法与精度丢失。
+大整数业务号不做数值转换，避免科学计数法与精度丢失；匹配组与取舍块直接来自
+store 里的同一份求解结果，与页面、差异清单一致。
 """
 from __future__ import annotations
 
@@ -21,7 +22,8 @@ def _money(value) -> str:
     return str(value)
 
 
-def report_text(records: list[dict], matches: list[dict], reconciliation: dict) -> str:
+def report_text(records: list[dict], matches: list[dict], reconciliation: dict,
+                decisions: list[dict] | None = None) -> str:
     totals = reconciliation["totals"]
     buffer = io.StringIO()
     writer = csv.writer(buffer)
@@ -52,7 +54,25 @@ def report_text(records: list[dict], matches: list[dict], reconciliation: dict) 
             _money(Decimal(group["ledger_sum"])),
             _money(Decimal(group["diff"])),
             _money(Decimal(group["fee_alloc"])),
+            "已确认" if group.get("confirmed") else "",
+        ])
+
+    for item in decisions or []:
+        if item["decision"] != "dropped":
+            continue
+        writer.writerow([
+            "取舍",
+            item["cand_id"],
+            TIER_NAMES.get(int(item["tier"]), ""),
+            len(item["bank_ids"]),
+            len(item["ledger_ids"]),
+            " ".join(item["bank_ids"]),
+            " ".join(item["ledger_ids"]),
             "",
+            "",
+            _money(Decimal(str(item["diff"]))),
+            "",
+            f"{reasons.label('MATCH_DROPPED')} {' '.join(item['blocked_by'])}",
         ])
 
     for item in reconciliation["differences"]:

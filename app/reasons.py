@@ -24,6 +24,9 @@ REASONS = {
     "LEDGER_UNMATCHED": ("账簿未匹配", "差异"),
     "TOLERANCE_GAP": ("容差差额", "差异"),
     "FEE_TOTAL": ("手续费合计", "差异"),
+    "MATCH_CHOSEN": ("求解选中", "求解"),
+    "MATCH_CONFIRMED": ("已确认锁定", "求解"),
+    "MATCH_DROPPED": ("被更优组合占用", "求解"),
 }
 
 # 一行同时命中多条规则时，按此顺序取主原因码，保证结果不随检查顺序变化。

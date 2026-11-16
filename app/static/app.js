@@ -28,7 +28,7 @@ function setBusy(value) {
   });
 }
 
-async function runAction(name) {
+async function runAction(name, el) {
   if (state.busy) return;
   if (name === "quarantine") {
     window.location.href = "/quarantine";
@@ -39,7 +39,10 @@ async function runAction(name) {
     candidates: "/api/candidates",
     matches: "/api/matches",
   };
-  const url = urls[name];
+  let url = urls[name];
+  if (!url && (name === "confirm" || name === "unconfirm") && el) {
+    url = `/api/matches/${encodeURIComponent(el.dataset.matchId)}/${name}`;
+  }
   if (!url) return;
   setBusy(true);
   try {
@@ -55,7 +58,7 @@ async function runAction(name) {
 document.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("click", (event) => {
     const button = event.target.closest("[data-action]");
-    if (button) runAction(button.dataset.action);
+    if (button) runAction(button.dataset.action, button);
   });
 
   const form = document.querySelector("#import-form");

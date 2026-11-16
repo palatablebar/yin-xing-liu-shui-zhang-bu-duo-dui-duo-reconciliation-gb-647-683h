@@ -4,7 +4,8 @@
 - 金额与手续费一律存 Decimal 字符串，不落 float；
 - 一次运行的所有行在同一个事务里写入，失败整体回滚；
 - 同一 run_id 重跑先删后插，行数、合计与首跑一致；
-- 大整数编号（流水号、凭证号）按字符串保形，不过 int()。
+- 大整数编号（流水号、凭证号）按字符串保形，不过 int()；
+- 匹配组与取舍轨迹可重写，确认表 match_confirmations 不随重跑清除。
 """
 from __future__ import annotations
 
@@ -85,6 +86,25 @@ CREATE TABLE IF NOT EXISTS matches (
     ledger_signed TEXT NOT NULL DEFAULT '0'
 );
 CREATE INDEX IF NOT EXISTS idx_matches_run ON matches(run_id, tier);
+CREATE TABLE IF NOT EXISTS match_decisions (
+    run_id TEXT NOT NULL,
+    cand_id TEXT NOT NULL,
+    tier INTEGER NOT NULL,
+    bank_ids TEXT NOT NULL,
+    ledger_ids TEXT NOT NULL,
+    diff TEXT NOT NULL,
+    day_gap INTEGER NOT NULL DEFAULT 0,
+    decision TEXT NOT NULL,
+    match_id TEXT NOT NULL DEFAULT '',
+    blocked_by TEXT NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS idx_decisions_run ON match_decisions(run_id, decision);
+CREATE TABLE IF NOT EXISTS match_confirmations (
+    run_id TEXT NOT NULL,
+    match_id TEXT NOT NULL,
+    confirmed_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, match_id)
+);
 """
 
 RUN_COLUMNS = (
@@ -144,7 +164,7 @@ class Store:
         return [self._run_row(row) for row in rows]
 
     def save_run(self, run: dict, records: list[dict], candidates: list[dict],
-                 matches: list[dict]) -> None:
+                 matches: list[dict], decisions: list[dict] | None = None) -> None:
         params_json = json.dumps(run.get("params", {}), ensure_ascii=False, sort_keys=True)
         states_json = json.dumps(run.get("input_states", {}), ensure_ascii=False)
         with self._conn() as conn:
@@ -152,6 +172,7 @@ class Store:
             conn.execute("DELETE FROM records WHERE run_id = ?", (run_id,))
             conn.execute("DELETE FROM candidates WHERE run_id = ?", (run_id,))
             conn.execute("DELETE FROM matches WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM match_decisions WHERE run_id = ?", (run_id,))
             conn.execute(
                 """INSERT OR REPLACE INTO runs (
                     run_id, created_at, rule_version, params_json, bank_sha256, ledger_sha256,
@@ -202,22 +223,45 @@ class Store:
                     for c in candidates
                 ],
             )
-            conn.executemany(
-                """INSERT INTO matches (run_id, match_id, tier, bank_ids, ledger_ids,
-                    bank_sum, ledger_sum, diff, day_gap, fee_alloc, fee_actual,
-                    bank_signed, ledger_signed) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                [
-                    (
-                        run_id, m["match_id"], m["tier"],
-                        json.dumps(m["bank_ids"], ensure_ascii=False),
-                        json.dumps(m["ledger_ids"], ensure_ascii=False),
-                        str(m["bank_sum"]), str(m["ledger_sum"]), str(m["diff"]), m["day_gap"],
-                        str(m.get("fee_alloc", "0")), str(m.get("fee_actual", "0")),
-                        str(m.get("bank_signed", "0")), str(m.get("ledger_signed", "0")),
-                    )
-                    for m in matches
-                ],
-            )
+            self._insert_matches(conn, run_id, matches)
+            self._insert_decisions(conn, run_id, decisions or [])
+
+    @staticmethod
+    def _insert_matches(conn, run_id: str, matches: list[dict]) -> None:
+        conn.executemany(
+            """INSERT INTO matches (run_id, match_id, tier, bank_ids, ledger_ids,
+                bank_sum, ledger_sum, diff, day_gap, fee_alloc, fee_actual,
+                bank_signed, ledger_signed) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            [
+                (
+                    run_id, m["match_id"], m["tier"],
+                    json.dumps(m["bank_ids"], ensure_ascii=False),
+                    json.dumps(m["ledger_ids"], ensure_ascii=False),
+                    str(m["bank_sum"]), str(m["ledger_sum"]), str(m["diff"]), m["day_gap"],
+                    str(m.get("fee_alloc", "0")), str(m.get("fee_actual", "0")),
+                    str(m.get("bank_signed", "0")), str(m.get("ledger_signed", "0")),
+                )
+                for m in matches
+            ],
+        )
+
+    @staticmethod
+    def _insert_decisions(conn, run_id: str, decisions: list[dict]) -> None:
+        conn.executemany(
+            """INSERT INTO match_decisions (run_id, cand_id, tier, bank_ids, ledger_ids,
+                diff, day_gap, decision, match_id, blocked_by) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            [
+                (
+                    run_id, d["cand_id"], d["tier"],
+                    json.dumps(d["bank_ids"], ensure_ascii=False),
+                    json.dumps(d["ledger_ids"], ensure_ascii=False),
+                    str(d["diff"]), d["day_gap"], d["decision"],
+                    d.get("match_id", ""),
+                    json.dumps(d.get("blocked_by", []), ensure_ascii=False),
+                )
+                for d in decisions
+            ],
+        )
 
     def set_status(self, run_id: str, status: str) -> None:
         with self._conn() as conn:
@@ -291,22 +335,50 @@ class Store:
                 ],
             )
 
-    def replace_matches(self, run_id: str, matches: list[dict]) -> None:
+    def replace_match_results(self, run_id: str, matches: list[dict],
+                              decisions: list[dict]) -> None:
+        """重写匹配组与取舍轨迹；确认表不动，已确认组由求解层保留。"""
         with self._conn() as conn:
             conn.execute("DELETE FROM matches WHERE run_id = ?", (run_id,))
-            conn.executemany(
-                """INSERT INTO matches (run_id, match_id, tier, bank_ids, ledger_ids,
-                    bank_sum, ledger_sum, diff, day_gap, fee_alloc, fee_actual,
-                    bank_signed, ledger_signed) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                [
-                    (
-                        run_id, m["match_id"], m["tier"],
-                        json.dumps(m["bank_ids"], ensure_ascii=False),
-                        json.dumps(m["ledger_ids"], ensure_ascii=False),
-                        str(m["bank_sum"]), str(m["ledger_sum"]), str(m["diff"]), m["day_gap"],
-                        str(m.get("fee_alloc", "0")), str(m.get("fee_actual", "0")),
-                        str(m.get("bank_signed", "0")), str(m.get("ledger_signed", "0")),
-                    )
-                    for m in matches
-                ],
+            conn.execute("DELETE FROM match_decisions WHERE run_id = ?", (run_id,))
+            self._insert_matches(conn, run_id, matches)
+            self._insert_decisions(conn, run_id, decisions)
+
+    def match_decisions(self, run_id: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM match_decisions WHERE run_id = ? ORDER BY tier, cand_id",
+                (run_id,),
+            ).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            item["bank_ids"] = json.loads(item.pop("bank_ids") or "[]")
+            item["ledger_ids"] = json.loads(item.pop("ledger_ids") or "[]")
+            item["blocked_by"] = json.loads(item.pop("blocked_by") or "[]")
+            out.append(item)
+        return out
+
+    # ---------- 确认 ----------
+    def confirmations(self, run_id: str) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM match_confirmations WHERE run_id = ? ORDER BY match_id",
+                (run_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def confirm_match(self, run_id: str, match_id: str, confirmed_at: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO match_confirmations (run_id, match_id, confirmed_at)"
+                " VALUES (?,?,?)",
+                (run_id, match_id, confirmed_at),
+            )
+
+    def unconfirm_match(self, run_id: str, match_id: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "DELETE FROM match_confirmations WHERE run_id = ? AND match_id = ?",
+                (run_id, match_id),
             )

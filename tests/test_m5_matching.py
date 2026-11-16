@@ -94,7 +94,7 @@ def test_tie_break_prefers_smaller_voucher(settings):
     records = parse_ledger(settings, "tie_break_ledger.csv")
     records.append(bank_record("B-TIE", "1234.00", "2026-03-10T01:00:00+00:00"))
     candidates = candidate.build(records, settings)
-    result = solve.solve(candidates, records, settings)
+    result = solve.solve(candidates, records, settings)["groups"]
     assert len(result) == 1
     assert result[0]["ledger_ids"] == ["V800"]
 
@@ -116,7 +116,7 @@ def test_tie_break_prefers_closer_date(settings):
         },
     ]
     candidates = candidate.build(records, settings)
-    result = solve.solve(candidates, records, settings)
+    result = solve.solve(candidates, records, settings)["groups"]
     assert len(result) == 1
     assert result[0]["ledger_ids"] == ["V-NEAR"]
     assert result[0]["day_gap"] == 0
@@ -127,8 +127,8 @@ def test_result_independent_of_candidate_order(client, demo):
     store = client.app.state.store
     records = store.records(demo["run_id"])
     candidates = store.candidates(demo["run_id"])
-    forward = solve.solve(candidates, records, client.app.state.settings)
-    backward = solve.solve(list(reversed(candidates)), records, client.app.state.settings)
+    forward = solve.solve(candidates, records, client.app.state.settings)["groups"]
+    backward = solve.solve(list(reversed(candidates)), records, client.app.state.settings)["groups"]
     assert [item["match_id"] for item in forward] == [item["match_id"] for item in backward]
 
 

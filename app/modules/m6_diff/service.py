@@ -19,6 +19,11 @@ def payload(store, run: dict | None, settings) -> dict:
     matches = store.matches(run["run_id"])
     result = differences.reconcile(records, matches, settings)
     result["run_id"] = run["run_id"]
+    decisions = store.match_decisions(run["run_id"])
+    result["counts"]["confirmed_groups"] = len(store.confirmations(run["run_id"]))
+    result["counts"]["dropped_candidates"] = sum(
+        1 for item in decisions if item["decision"] == "dropped"
+    )
     return result
 
 

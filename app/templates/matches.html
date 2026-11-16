@@ -5,13 +5,17 @@
   <header class="page-head">
     <h1>匹配</h1>
     <span class="page-meta">{{ groups|length }} 组</span>
+    <span class="page-meta">已确认 {{ confirmed_count }} 组</span>
     <span class="page-meta">手续费 {{ fee_total|money }} 元</span>
+    <span class="page-meta">预计差额 {{ match_gap|money }} 元</span>
     <a class="btn" href="/batches">看批次</a>
   </header>
   <section class="panel">
+    <h2>最终组合</h2>
+    <p class="hint">取舍顺序：对平笔数多 → 对平金额大 → 差额小 → 日期差小 → 结构简单 → 业务号升序。确认的组在重跑时保留。</p>
     <div class="table-wrap">
       <table class="grid" id="match-table">
-        <thead><tr><th>层级</th><th>银行流水</th><th>账簿凭证</th><th class="num">银行金额</th><th class="num">账簿金额</th><th class="num">差额</th><th class="num">手续费分摊</th></tr></thead>
+        <thead><tr><th>层级</th><th>银行流水</th><th>账簿凭证</th><th class="num">银行金额</th><th class="num">账簿金额</th><th class="num">差额</th><th class="num">手续费分摊</th><th>确认</th></tr></thead>
         <tbody>
         {% for group in groups %}
           <tr>
@@ -22,11 +26,41 @@
             <td class="num mono">{{ group.ledger_sum|money }}</td>
             <td class="num mono">{{ group.diff|money }}</td>
             <td class="num mono">{{ group.fee_alloc|money }}</td>
+            <td>
+              {% if group.confirmed %}
+                <span class="chip">已确认</span>
+                <button class="btn btn-link" data-action="unconfirm" data-match-id="{{ group.match_id }}">取消</button>
+              {% else %}
+                <button class="btn btn-link" data-action="confirm" data-match-id="{{ group.match_id }}">确认</button>
+              {% endif %}
+            </td>
           </tr>
         {% endfor %}
         </tbody>
       </table>
       {% if not groups %}<p class="empty">没有匹配组。</p>{% endif %}
+    </div>
+  </section>
+  <section class="panel">
+    <h2>被放弃的候选</h2>
+    <p class="hint">这些候选与最终组合共享流水或凭证，在全局比较中落败；重跑时已确认组不会被它们顶替。</p>
+    <div class="table-wrap">
+      <table class="grid" id="dropped-table">
+        <thead><tr><th>层级</th><th>银行流水</th><th>账簿凭证</th><th class="num">差额</th><th class="num">日期差</th><th>占用它的组</th></tr></thead>
+        <tbody>
+        {% for item in dropped %}
+          <tr>
+            <td>{{ item.tier|tier_label }}</td>
+            <td class="mono">{{ item.bank_ids|join(' ') }}</td>
+            <td class="mono">{{ item.ledger_ids|join(' ') }}</td>
+            <td class="num mono">{{ item.diff|money }}</td>
+            <td class="num mono">{{ item.day_gap }}</td>
+            <td class="mono">{{ item.blocked_by|join(' ') }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% if not dropped %}<p class="empty">没有被放弃的候选。</p>{% endif %}
     </div>
   </section>
 </main>

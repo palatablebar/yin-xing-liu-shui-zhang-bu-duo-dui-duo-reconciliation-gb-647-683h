@@ -34,7 +34,19 @@ curl -s -X POST http://127.0.0.1:18206/api/candidates
 curl -s -X POST http://127.0.0.1:18206/api/matches
 ```
 
-同一输入重跑命中同一 `run_id`，先删后插，行数与合计不变。
+同一输入重跑命中同一 `run_id`，先删后插，行数与合计不变；已确认的匹配组
+（`match_confirmations` 表）不被重跑覆盖，只有未确认的行重新参与择一。
+
+## 确认与取消确认
+
+```bash
+curl -s -X POST http://127.0.0.1:18206/api/matches/<match_id>/confirm
+curl -s -X POST http://127.0.0.1:18206/api/matches/<match_id>/unconfirm
+```
+
+确认后重跑匹配或重新导入同一份文件，该组保持原样；取消确认后下次求解重新参与全局择一。
+每条候选的取舍（选中 / 已确认 / 被放弃及占用它的组）见 `GET /api/matches` 的
+`decisions`、页面 `/matches` 与报告 CSV 的「取舍」区块。
 
 ## 导入自有文件
 

@@ -102,6 +102,13 @@ def _summary(settings, run: dict, records: list[dict], candidates: list[dict],
     }
 
 
+def _confirmed_groups(store, run_id: str) -> list[dict]:
+    """重跑时保留已确认组：同输入命中同一 run_id，确认记录随之生效。"""
+    confirmed_ids = {item["match_id"] for item in store.confirmations(run_id)}
+    return [group for group in store.matches(run_id)
+            if group["match_id"] in confirmed_ids]
+
+
 def _empty_meta() -> dict:
     return {"file": "", "sha": "", "bytes": 0, "raw": 0, "state": "", "segments": 0}
 
@@ -117,12 +124,14 @@ def run_demo(settings, store, bank_name: str = DEFAULT_BANK,
     parsed_ledger["sha256"] = sha256_hex(ledger_raw)
     records = bank_records + ledger_records
     candidates = candidate_mod.build(records, settings)
-    matches = solve_mod.solve(candidates, records, settings)
     duration = int((time.monotonic() - started) * 1000)
     run = _run(settings, _side_meta(parsed_bank), _side_meta(parsed_ledger),
                records, "matched", duration)
-    store.save_run(run, records, candidates, matches)
-    return _summary(settings, store.get_run(run["run_id"]), records, candidates, matches)
+    confirmed = _confirmed_groups(store, run["run_id"])
+    result = solve_mod.solve(candidates, records, settings, confirmed=confirmed)
+    store.save_run(run, records, candidates, result["groups"], result["decisions"])
+    return _summary(settings, store.get_run(run["run_id"]), records, candidates,
+                    result["groups"])
 
 
 def import_side(settings, store, side: str, filename: str, raw: bytes) -> dict:
@@ -156,15 +165,19 @@ def import_side(settings, store, side: str, filename: str, raw: bytes) -> dict:
     combined = other_records + records
     both = bool(bank_meta["sha"] and ledger_meta["sha"])
     candidates: list[dict] = []
-    matches: list[dict] = []
-    if both:
-        candidates = candidate_mod.build(combined, settings)
-        matches = solve_mod.solve(candidates, combined, settings)
+    groups: list[dict] = []
+    decisions: list[dict] = []
     status = "matched" if both else f"partial_{side}"
     duration = int((time.monotonic() - started) * 1000)
     run = _run(settings, bank_meta, ledger_meta, combined, status, duration)
-    store.save_run(run, combined, candidates, matches)
-    summary = _summary(settings, store.get_run(run["run_id"]), combined, candidates, matches)
+    if both:
+        candidates = candidate_mod.build(combined, settings)
+        confirmed = _confirmed_groups(store, run["run_id"])
+        result = solve_mod.solve(candidates, combined, settings, confirmed=confirmed)
+        groups = result["groups"]
+        decisions = result["decisions"]
+    store.save_run(run, combined, candidates, groups, decisions)
+    summary = _summary(settings, store.get_run(run["run_id"]), combined, candidates, groups)
     summary.update({
         "side": side,
         "state": parsed["state"],

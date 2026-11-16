@@ -11,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 from . import reasons
 from .config import BASE_DIR
 from .modules.m2_contract import service as contract_service
+from .modules.m5_matching import service as matching_service
 from .modules.m5_matching.subset import TIER_NAMES
 from .modules.m6_diff import differences as differences_mod
 from .modules.m6_diff import history as history_mod
@@ -192,12 +193,16 @@ def setup(app: FastAPI) -> None:
         store = request.app.state.store
         context = base(request, "匹配", "/matches")
         run = context["run"]
-        groups = store.matches(run["run_id"]) if run else []
-        fee_total = sum((Decimal(group["fee_alloc"]) for group in groups), Decimal("0.00"))
+        data = matching_service.payload(store, run)
+        fee_total = sum((Decimal(group["fee_alloc"]) for group in data["groups"]), Decimal("0.00"))
+        dropped = [item for item in data["decisions"] if item["decision"] == "dropped"]
         context.update({
-            "groups": groups,
+            "groups": data["groups"],
             "tier_names": TIER_NAMES,
             "fee_total": fee_total,
+            "match_gap": data["match_gap"],
+            "dropped": dropped,
+            "confirmed_count": data["confirmed_count"],
         })
         return render(request, "matches.html", context)
 
